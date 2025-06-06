@@ -1,83 +1,80 @@
-from flask import Flask, request, jsonify
+import pandas as pd
+import numpy as np
 import requests
+from ta import add_all_ta_features
 
-app = Flask(__name__)
+# ✅ جلب بيانات OKX - 1000 شمعة 1H
+def fetch_okx_data(symbol="BTC-USDT", interval="1H", limit=1000):
+    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={interval}&limit={limit}"
+    response = requests.get(url)
+    data = response.json()['data']
+    df = pd.DataFrame(data, columns=[
+        'timestamp', 'open', 'high', 'low', 'close',
+        'volume_token', 'volume_usdt', 'volume_alt', 'unknown'])
+    df = df.iloc[::-1].reset_index(drop=True)
+    df['timestamp'] = pd.to_datetime(df['timestamp'].astype(np.int64), unit='ms')
+    for col in ['open', 'high', 'low', 'close', 'volume_token']:
+        df[col] = pd.to_numeric(df[col])
+    return df[['timestamp', 'open', 'high', 'low', 'close', 'volume_token']]
 
-# تحليل الشموع المغلقة
-def analyze_candles(candles):
-    ob_zones = []
-    fvg_zones = []
-    bos_points = []
+# ✅ تحليل الاتجاه العام
+def detect_trend(df):
+    df['ema20'] = df['close'].rolling(20).mean()
+    df['ema50'] = df['close'].rolling(50).mean()
+    trend = "صاعد" if df['ema20'].iloc[-1] > df['ema50'].iloc[-1] else "هابط"
+    return trend
 
-    # ترتيب الشموع من الأقدم إلى الأحدث
-    candles = list(reversed(candles))
+# ✅ تحديد Order Blocks (بسيطة مبدئياً)
+def find_ob(df):
+    ob_list = []
+    for i in range(3, len(df)-3):
+        body = abs(df['close'][i] - df['open'][i])
+        full_range = df['high'][i] - df['low'][i]
+        if body > full_range * 0.6:
+            is_bull = df['close'][i] > df['open'][i]
+            bos = df['high'][i+1] > df['high'][i] if is_bull else df['low'][i+1] < df['low'][i]
+            if bos:
+                ob_list.append({
+                    "type": "demand" if is_bull else "supply",
+                    "entry": df['open'][i],
+                    "zone_low": df['low'][i],
+                    "zone_high": df['high'][i],
+                    "timestamp": df['timestamp'][i]
+                })
+    return ob_list
 
-    for i in range(2, len(candles)):
-        _, o, h, l, c, _, _ = candles[i]
-        o = float(o)
-        h = float(h)
-        l = float(l)
-        c = float(c)
+# ✅ توليد التقرير
+def generate_report(df, ob_list, trend):
+    last_price = df['close'].iloc[-1]
+    ob = next((ob for ob in reversed(ob_list) if ob['type'] == ('demand' if trend == "صاعد" else 'supply')), None)
 
-        prev1 = list(map(float, candles[i-1][1:5]))
-        prev2 = list(map(float, candles[i-2][1:5]))
+    if not ob:
+        return "🚫 لا توجد منطقة مناسبة حسب الاتجاه."
 
-        # Bearish OB
-        if prev1[3] < l and prev1[0] < prev1[3] and c < o:
-            ob_zones.append({
-                "type": "bearish",
-                "start": prev1[1],
-                "end": prev1[2],
-                "index": i-1
-            })
+    sl = ob['zone_low'] if trend == "صاعد" else ob['zone_high']
+    tp1 = last_price + (last_price - sl) * 1.5 if trend == "صاعد" else last_price - (sl - last_price) * 1.5
+    tp2 = last_price + (last_price - sl) * 2.5 if trend == "صاعد" else last_price - (sl - last_price) * 2.5
 
-        # FVG
-        if prev2[2] > prev1[1] and l > prev2[2]:
-            fvg_zones.append({
-                "gap_start": prev2[2],
-                "gap_end": l,
-                "index": i
-            })
+    report = f"""
+🔸 العملة: BTC/USDT
+السعر اللحظي: ${last_price}
+نوع الصفقة: {"LONG" if trend == "صاعد" else "SHORT"}
 
-        # BOS
-        if c > prev1[1] and c > prev2[1]:
-            bos_points.append({
-                "type": "bullish",
-                "close": c,
-                "index": i
-            })
+التحليل الفني:
+- الاتجاه العام: {trend}
+- منطقة OB: {ob['zone_low']} → {ob['zone_high']}
+- نقطة الدخول: {ob['entry']}
+- SL: {sl}
+- TP1: {tp1:.2f} / TP2: {tp2:.2f}
+- RR: 1:{round((tp1-last_price)/(last_price-sl),2)}
+✅ تم توليد التقرير بنجاح!
+"""
+    return report
 
-    return ob_zones, fvg_zones, bos_points
-
-# Endpoint للتحليل
-@app.route("/analyze", methods=["GET"])
-def analyze():
-    symbol = request.args.get("symbol", "BTC-USDT")
-    bar = request.args.get("timeframe", "4H")
-
-    # جلب الشموع من OKX
-    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={bar}&limit=100"
-    r = requests.get(url)
-    data = r.json()
-    candles = data.get("data", [])
-
-    if not candles:
-        return jsonify({"error": "لا توجد بيانات شموع"})
-
-    ob, fvg, bos = analyze_candles(candles)
-
-    return jsonify({
-        "symbol": symbol,
-        "timeframe": bar,
-        "order_blocks": ob,
-        "fvg": fvg,
-        "bos": bos
-    })
-
-# الصفحة الرئيسية
-@app.route("/")
-def home():
-    return "✅ API شغال تمام"
-
+# ✅ تشغيل كامل
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    df = fetch_okx_data()
+    trend = detect_trend(df)
+    ob_list = find_ob(df)
+    result = generate_report(df, ob_list, trend)
+    print(result)
