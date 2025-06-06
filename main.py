@@ -23,58 +23,32 @@ def detect_trend(df):
     df['ema50'] = df['close'].rolling(50).mean()
     trend = "صاعد" if df['ema20'].iloc[-1] > df['ema50'].iloc[-1] else "هابط"
     return trend
+import requests
 
-# ✅ تحديد Order Blocks (بسيطة مبدئياً)
-def find_ob(df):
-    ob_list = []
-    for i in range(3, len(df)-3):
-        body = abs(df['close'][i] - df['open'][i])
-        full_range = df['high'][i] - df['low'][i]
-        if body > full_range * 0.6:
-            is_bull = df['close'][i] > df['open'][i]
-            bos = df['high'][i+1] > df['high'][i] if is_bull else df['low'][i+1] < df['low'][i]
-            if bos:
-                ob_list.append({
-                    "type": "demand" if is_bull else "supply",
-                    "entry": df['open'][i],
-                    "zone_low": df['low'][i],
-                    "zone_high": df['high'][i],
-                    "timestamp": df['timestamp'][i]
-                })
-    return ob_list
+def send_telegram_message(token, chat_id, message):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        'chat_id': chat_id,
+        'text': message
+    }
+    response = requests.post(url, data=payload)
+    return response
 
-# ✅ توليد التقرير
-def generate_report(df, ob_list, trend):
-    last_price = df['close'].iloc[-1]
-    ob = next((ob for ob in reversed(ob_list) if ob['type'] == ('demand' if trend == "صاعد" else 'supply')), None)
+# 🔧 استخدم هنا توكن البوت و Chat ID
+TELEGRAM_BOT_TOKEN = "🔑 ضع التوكن هنا بين علامتي تنصيص"
+TELEGRAM_CHAT_ID = "💬 ضع الشات آي دي هنا"
 
-    if not ob:
-        return "🚫 لا توجد منطقة مناسبة حسب الاتجاه."
+# 📤 أرسل التقرير لتليجرام
+send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, result)
+def send_telegram_message(token, chat_id, message):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {'chat_id': chat_id, 'text': message}
+    res = requests.post(url, data=payload)
+    return res
 
-    sl = ob['zone_low'] if trend == "صاعد" else ob['zone_high']
-    tp1 = last_price + (last_price - sl) * 1.5 if trend == "صاعد" else last_price - (sl - last_price) * 1.5
-    tp2 = last_price + (last_price - sl) * 2.5 if trend == "صاعد" else last_price - (sl - last_price) * 2.5
+# 🔐 بيانات البوت
+TELEGRAM_BOT_TOKEN = "🔑 ضع التوكن هنا"
+TELEGRAM_CHAT_ID = "💬 ضع الشات ID هنا كرقم"
 
-    report = f"""
-🔸 العملة: BTC/USDT
-السعر اللحظي: ${last_price}
-نوع الصفقة: {"LONG" if trend == "صاعد" else "SHORT"}
-
-التحليل الفني:
-- الاتجاه العام: {trend}
-- منطقة OB: {ob['zone_low']} → {ob['zone_high']}
-- نقطة الدخول: {ob['entry']}
-- SL: {sl}
-- TP1: {tp1:.2f} / TP2: {tp2:.2f}
-- RR: 1:{round((tp1-last_price)/(last_price-sl),2)}
-✅ تم توليد التقرير بنجاح!
-"""
-    return report
-
-# ✅ تشغيل كامل
-if __name__ == "__main__":
-    df = fetch_okx_data()
-    trend = detect_trend(df)
-    ob_list = find_ob(df)
-    result = generate_report(df, ob_list, trend)
-    print(result)
+# 📤 أرسل التقرير
+send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, result)
